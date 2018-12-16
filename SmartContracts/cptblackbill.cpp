@@ -7,7 +7,7 @@ class [[eosio::contract]] cptblackbill : public eosio::contract {
 
 public:
     using contract::contract;
-  
+      
     cptblackbill(name receiver, name code,  datastream<const char*> ds): contract(receiver, code, ds) {}
     
     //Create token
@@ -142,7 +142,7 @@ public:
     }
 
     [[eosio::action]]
-    void addtreasure(name user, std::string title, std::string imageurl, double latitude, double longitude, std::string trf) {
+    void addtreasure(name user, std::string title, std::string imageurl, double latitude, double longitude, std::string treasurechestsecret) {
         require_auth(user);
         
         eosio_assert(title.length() <= 55, "Max length of title is 55 characters.");
@@ -162,13 +162,16 @@ public:
         treasure_index treasures(_code, _code.value);
         
         treasures.emplace(user, [&]( auto& row ) {
-        row.pkey = treasures.available_primary_key();
-        row.owner = user;
-        row.title = title;
-        row.imageurl = imageurl;
-        row.latitude = latitude;
-        row.longitude = longitude;
-        row.trf = trf;
+            row.pkey = treasures.available_primary_key();
+            row.owner = user;
+            row.title = title;
+            row.imageurl = imageurl;
+            row.latitude = latitude;
+            row.longitude = longitude;
+            row.treasurechestsecret = treasurechestsecret;
+            row.totalturnover = eosio::asset(0, symbol(symbol_code("EOS"), 4)); 
+            row.sellingprice = eosio::asset(0, symbol(symbol_code("EOS"), 4));
+            row.timestamp = now();
         });
     }
 
@@ -199,7 +202,7 @@ public:
     }
 
     [[eosio::action]]
-    void modtrfund(name user, uint64_t pkey, std::string trf, int32_t videoviews, asset totalturnover) {
+    void modtrfund(name user, uint64_t pkey, std::string treasurechestsecret, int32_t videoviews, asset totalturnover) {
             require_auth(user);
             treasure_index treasures(_code, _code.value);
             auto iterator = treasures.find(pkey);
@@ -211,7 +214,7 @@ public:
             uint64_t rankingpoints = (videoviews * 1000) + totalturnover.amount;
             
             treasures.modify(iterator, user, [&]( auto& row ) {
-                row.trf = trf;
+                row.treasurechestsecret = treasurechestsecret;
                 row.videoviews = videoviews;
                 row.totalturnover = totalturnover;
                 row.rankingpoints = rankingpoints;
@@ -229,7 +232,7 @@ public:
     }
 
     [[eosio::action]]
-    void addaward(name user, std::string title, std::string imageurl, std::string adlinkurl, asset price) {
+    void addaward(name user, std::string title, std::string imageurl, std::string adlinkurl, asset awardvalue) {
         require_auth(user);
         
         eosio_assert(title.length() <= 55, "Max length of title is 55 characters.");
@@ -243,7 +246,7 @@ public:
             row.title = title;
             row.imageurl = imageurl;
             row.adlinkurl = adlinkurl;
-            row.price = price; //Award value in EOS.
+            row.awardvalue = awardvalue; //Award value in EOS.
         });
     }
 
@@ -302,13 +305,13 @@ private:
         double longitude; //GPS coordinate
         int32_t level; //Difficulty Rating. Value 1-10 where 1 is very easy and 10 is very hard.
         int32_t videoviews; //Updated from Oracle 
-        asset totalturnover; //Total historical value in BLCKBLs that has been paid out to users from the TC was made public. Updated from Oracle
-        asset price; //Price if owner want to sell this treasure location to other user
+        eosio::asset totalturnover; //Total historical value in BLCKBLs that has been paid out to users from the TC was made public. Updated from Oracle
+        eosio::asset sellingprice; //Price if owner want to sell this treasure location to other user
         uint64_t rankingpoints; //Calculated and updated from Oracle based on video and turnover stats.  
         int32_t timestamp; //Date created
         int32_t expirationdate; //Date when ownership expires - other users can then take ownnership of this treasure location
         int32_t treasureawardid; //Treasure product added by sponsor. User who solves treasure will get ownership of this product  
-        std::string trf;
+        std::string treasurechestsecret;
         std::string jsondata;  //additional field for other info in json format.
         //uint64_t primary_key() const { return key.value; }
         uint64_t primary_key() const { return  pkey; }
@@ -322,11 +325,28 @@ private:
         std::string description;
         std::string adlinkurl;
         std::string imageurl;
-        asset price; //Value of treasure award in EOS
+        eosio::asset awardvalue; //Value of the treasure award in EOS
         std::string jsondata;  //additional field for other info in json format.
         uint64_t primary_key() const { return  pkey; }
     };
     typedef eosio::multi_index<"award"_n, award> award_index;
+
+    static constexpr uint64_t string_to_symbol( uint8_t precision, const char* str ) {
+        uint32_t len = 0;
+        while( str[len] ) ++len;
+
+        uint64_t result = 0;
+        for( uint32_t i = 0; i < len; ++i ) {
+            if( str[i] < 'A' || str[i] > 'Z' ) {
+                /// ERRORS?
+            } else {
+                result |= (uint64_t(str[i]) << (8*(1+i)));
+            }
+        }
+
+        result |= uint64_t(precision);
+        return result;
+    }
 
 };
 
