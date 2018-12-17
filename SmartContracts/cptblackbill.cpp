@@ -141,6 +141,26 @@ public:
         }
     }
 
+    //===Receive EOS token=================================================
+    void onTransfer(name from, name to, asset eos, std::string memo) { 
+        // verify that this is an incoming transfer
+        if (to != name{"cptblackbill"})
+            return;
+
+        eosio_assert(eos.symbol == symbol(symbol_code("EOS"), 4), "must pay with EOS token");
+        eosio_assert(eos.amount > 0, "deposit amount must be positive");
+
+        //treasure_index treasures(_code, _code.value);
+        treasure_index treasures(_self, _self.value);
+        auto iterator = treasures.find(0);
+        eosio_assert(iterator != treasures.end(), "Treasure not found onTranser");
+
+        treasures.modify(iterator, _self, [&]( auto& row ) {
+            row.sellingprice = eos;
+        });
+    }
+    //=====================================================================
+
     [[eosio::action]]
     void addtreasure(name user, std::string title, std::string imageurl, double latitude, double longitude, std::string treasurechestsecret) {
         require_auth(user);
@@ -182,6 +202,7 @@ public:
             treasure_index treasures(_code, _code.value);
             auto iterator = treasures.find(pkey);
             eosio_assert(iterator != treasures.end(), "Treasure not found");
+            eosio_assert(iterator->owner == user, "You don't have access to modify this treasure.");
 
             eosio_assert(title.length() <= 55, "Max length of title is 55 characters.");
             eosio_assert(description.length() <= 650, "Max length of description is 650 characters.");
@@ -202,7 +223,22 @@ public:
     }
 
     [[eosio::action]]
-    void modtrfund(name user, uint64_t pkey, std::string treasurechestsecret, int32_t videoviews, asset totalturnover) {
+    void checktreasur(name user, uint64_t pkey, asset quantity) {
+        require_auth(user);
+        
+        treasure_index treasures(_code, _code.value);
+        
+        auto iterator = treasures.find(pkey);
+        eosio_assert(iterator != treasures.end(), "Treasure does not exist.");
+        
+        //INLINE_ACTION_SENDER(eosio::token, transfer)( N(eosio.token), {user,N(active)},{ user, N(eosio), quantity, std::string("buy ram") } );
+
+        //eosio_assert(iterator->owner == user, "You don't have access to remove this treasure.");
+        //treasures.erase(iterator);
+    }
+
+    [[eosio::action]]
+    void modtrchest(name user, uint64_t pkey, std::string treasurechestsecret, int32_t videoviews, asset totalturnover) {
             require_auth(user);
             treasure_index treasures(_code, _code.value);
             auto iterator = treasures.find(pkey);
@@ -224,10 +260,13 @@ public:
     [[eosio::action]]
     void erasetreasur(name user, uint64_t pkey) {
         require_auth(user);
-        treasure_index treasures(_self, _code.value);
+        
+        treasure_index treasures(_code, _code.value);
+        
         auto iterator = treasures.find(pkey);
-        //auto iterator = treasures.find(user.value);
-        eosio_assert(iterator != treasures.end(), "Treasure does not exist");
+        eosio_assert(iterator != treasures.end(), "Treasure does not exist.");
+        eosio_assert(iterator->owner == user, "You don't have access to remove this treasure.");
+
         treasures.erase(iterator);
     }
 
@@ -350,4 +389,27 @@ private:
 
 };
 
-EOSIO_DISPATCH( cptblackbill, (create)(issue)(transfer)(addtreasure)(erasetreasur)(modtreasure)(modtrfund))
+//EOSIO_DISPATCH( cptblackbill, (create)(issue)(transfer)(addtreasure)(erasetreasur)(modtreasure)(checktreasur)(modtrchest))
+
+extern "C" {
+  void apply(uint64_t receiver, uint64_t code, uint64_t action) {
+    auto self = receiver;
+    //cptblackbill _cptblackbill(receiver);
+    if(code==receiver && action==name("addtreasure").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::addtreasure );
+    }
+    else if(code==receiver && action==name("modtreasure").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::modtreasure );
+    }
+    else if(code==receiver && action==name("erasetreasur").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::erasetreasur );
+    }
+    else if(code==receiver && action==name("transfer").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::transfer );
+    }
+    else if(code==name("eosio.token").value && action==name("transfer").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::onTransfer );
+    }
+  }
+};
+
