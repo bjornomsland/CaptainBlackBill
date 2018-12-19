@@ -150,13 +150,17 @@ public:
         eosio_assert(eos.symbol == symbol(symbol_code("EOS"), 4), "must pay with EOS token");
         eosio_assert(eos.amount > 0, "deposit amount must be positive");
 
-        //treasure_index treasures(_code, _code.value);
+        size_t pos = memo.find("RCVT");
+        std::string strtreasurepkey = memo.substr(pos + 4);
+        uint64_t treasurepkey = std::strtoull(strtreasurepkey.c_str(),NULL,0);
+        
         treasure_index treasures(_self, _self.value);
-        auto iterator = treasures.find(0);
-        eosio_assert(iterator != treasures.end(), "Treasure not found onTranser");
+        auto iterator = treasures.find(treasurepkey);
+        eosio_assert(iterator != treasures.end(), "Treasure not found.");
 
+        //Tag the transfered amount on the treasure so the modtrchest-function can store the treasure value as an encrypted(hidden value)
         treasures.modify(iterator, _self, [&]( auto& row ) {
-            row.sellingprice = eos;
+            row.prechesttransfer += eos;
         });
     }
     //=====================================================================
@@ -191,6 +195,7 @@ public:
             row.treasurechestsecret = treasurechestsecret;
             row.totalturnover = eosio::asset(0, symbol(symbol_code("EOS"), 4)); 
             row.sellingprice = eosio::asset(0, symbol(symbol_code("EOS"), 4));
+            row.prechesttransfer = eosio::asset(0, symbol(symbol_code("EOS"), 4));
             row.timestamp = now();
         });
     }
@@ -222,7 +227,7 @@ public:
             });
     }
 
-    [[eosio::action]]
+    /*[[eosio::action]]
     void checktreasur(name user, uint64_t pkey, asset quantity) {
         require_auth(user);
         
@@ -235,26 +240,43 @@ public:
 
         //eosio_assert(iterator->owner == user, "You don't have access to remove this treasure.");
         //treasures.erase(iterator);
-    }
+    }*/
 
     [[eosio::action]]
     void modtrchest(name user, uint64_t pkey, std::string treasurechestsecret, int32_t videoviews, asset totalturnover) {
-            require_auth(user);
-            treasure_index treasures(_code, _code.value);
-            auto iterator = treasures.find(pkey);
-            eosio_assert(iterator != treasures.end(), "Treasure not found");
-            
-            name oracleaccount = name{"cptbbfinanc1"};
-            eosio_assert(user == oracleaccount, "Updating trcf is only allowed by Oracle account.");
+        require_auth(user);
+        treasure_index treasures(_code, _code.value);
+        auto iterator = treasures.find(pkey);
+        eosio_assert(iterator != treasures.end(), "Treasure not found");
+        
+        name oracleaccount = name{"cptblackbill"};
+        eosio_assert(user == oracleaccount, "Updating trcf is only allowed by CptBlackBill.");
 
-            uint64_t rankingpoints = (videoviews * 1000) + totalturnover.amount;
-            
-            treasures.modify(iterator, user, [&]( auto& row ) {
-                row.treasurechestsecret = treasurechestsecret;
-                row.videoviews = videoviews;
-                row.totalturnover = totalturnover;
-                row.rankingpoints = rankingpoints;
-            });
+        uint64_t rankingpoints = (videoviews * 1000) + totalturnover.amount;
+        eosio::asset currentprechesttransfer = iterator->prechesttransfer; 
+
+        treasures.modify(iterator, user, [&]( auto& row ) {
+            row.treasurechestsecret = treasurechestsecret; //This is the encrypted value of the treasure. It's not very hard to decrypt if someone finds that more exciting than reading the code on location. But for most of us it's easier to just pay $2 to get the treasure value.
+            row.videoviews = videoviews;
+            row.totalturnover = totalturnover;
+            row.rankingpoints = rankingpoints;
+            row.prechesttransfer = eosio::asset(0, symbol(symbol_code("EOS"), 4)); //Clear this - amount has been encrypted and stored in the treasurechestsecret
+        });
+        
+        eosio::asset fivepercenttotokenholders = (currentprechesttransfer * (5 * 100)) / 10000;
+        action(
+            permission_level{ get_self(), "active"_n },
+            "eosio.token"_n, "transfer"_n,
+            std::make_tuple(get_self(), "testnetbill4"_n, fivepercenttotokenholders, std::string("five percent to token holders"))
+        ).send();
+
+        //std::string message = "Successful transfered five percent cut to token holders fund account";
+        //action(
+        //    permission_level{get_self(),"active"_n},
+        //    get_self(),
+        //    "notify"_n,
+        //    std::make_tuple(user, name{user}.to_string() + message)
+        //).send();
     }
 
     [[eosio::action]]
@@ -302,9 +324,9 @@ public:
         auto iteratortrasure = treasures.find(treasure_pkey);
         eosio_assert(iteratortrasure != treasures.end(), "Treasure not found");
 
-        treasures.modify(iteratortrasure, user, [&]( auto& row ) {
-            row.treasureawardid = award_pkey;
-        });
+        //treasures.modify(iteratortrasure, user, [&]( auto& row ) {
+        //    row.treasureawardid = award_pkey;
+        //});
     }
 
     [[eosio::action]]
@@ -346,12 +368,18 @@ private:
         int32_t videoviews; //Updated from Oracle 
         eosio::asset totalturnover; //Total historical value in BLCKBLs that has been paid out to users from the TC was made public. Updated from Oracle
         eosio::asset sellingprice; //Price if owner want to sell this treasure location to other user
+        eosio::asset prechesttransfer; //Used when someone pay for checking treasure value. Token value is stored here until cptblackbill add tokens to encrypted treasure value
         uint64_t rankingpoints; //Calculated and updated from Oracle based on video and turnover stats.  
         int32_t timestamp; //Date created
         int32_t expirationdate; //Date when ownership expires - other users can then take ownnership of this treasure location
-        int32_t treasureawardid; //Treasure product added by sponsor. User who solves treasure will get ownership of this product  
         std::string treasurechestsecret;
         std::string jsondata;  //additional field for other info in json format.
+        std::string sponsorimageurl; //Advertise image from sponsor. User who solves treasure will get this product/award 
+        name sponsorowneraccount;
+        std::string sponsororderpageurl; //sponsor image will link to this web-page. Users must be able to buy and winners must be able to claim award from this page.
+        eosio::asset sponsorawardvalue; //the value of the award that will be transfered to the first treasure finder
+        eosio::asset sponsorfeetotreasurecreator; //the same value as the award, but this will be transfered to the owner of the treasure (equal payout for treasure owner and finder)
+
         //uint64_t primary_key() const { return key.value; }
         uint64_t primary_key() const { return  pkey; }
     };
@@ -400,6 +428,9 @@ extern "C" {
     }
     else if(code==receiver && action==name("modtreasure").value) {
       execute_action(name(receiver), name(code), &cptblackbill::modtreasure );
+    }
+    else if(code==receiver && action==name("modtrchest").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::modtrchest );
     }
     else if(code==receiver && action==name("erasetreasur").value) {
       execute_action(name(receiver), name(code), &cptblackbill::erasetreasur );
