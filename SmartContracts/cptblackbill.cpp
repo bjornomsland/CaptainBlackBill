@@ -7,33 +7,9 @@ class [[eosio::contract]] cptblackbill : public eosio::contract {
 
 public:
     using contract::contract;
-      
-    //_awardqutable(receiver, code.value)
-
+    
     cptblackbill(name receiver, name code,  datastream<const char*> ds): contract(receiver, code, ds) {}
     
-    //Create token
-    [[eosio::action]]
-    void create(name issuer, asset maximum_supply )
-    {
-        require_auth( _self );
-
-        auto sym = maximum_supply.symbol;
-        eosio_assert( sym.is_valid(), "invalid symbol name" );
-        eosio_assert( maximum_supply.is_valid(), "invalid supply");
-        eosio_assert( maximum_supply.amount > 0, "max-supply must be positive");
-
-        stats statstable( _self, sym.code().raw() );
-        auto existing = statstable.find( sym.code().raw() );
-        eosio_assert( existing == statstable.end(), "token with symbol already exists" );
-
-        statstable.emplace( _self, [&]( auto& s ) {
-            s.supply.symbol = maximum_supply.symbol;
-            s.max_supply    = maximum_supply;
-            s.issuer        = issuer;
-        });
-    }
-
     //Issue token
     [[eosio::action]]
     void issue(name to, asset quantity, std::string memo )
@@ -65,32 +41,6 @@ public:
         }
     }
 
-    //Retire token
-    [[eosio::action]]
-    void retire( asset quantity, std::string memo )
-    {
-        auto sym = quantity.symbol;
-        eosio_assert( sym.is_valid(), "invalid symbol name" );
-        eosio_assert( memo.size() <= 256, "memo has more than 256 bytes" );
-
-        stats statstable( _self, sym.code().raw() );
-        auto existing = statstable.find( sym.code().raw() );
-        eosio_assert( existing != statstable.end(), "token with symbol does not exist" );
-        const auto& st = *existing;
-
-        require_auth( st.issuer );
-        eosio_assert( quantity.is_valid(), "invalid quantity" );
-        eosio_assert( quantity.amount > 0, "must retire positive quantity" );
-
-        eosio_assert( quantity.symbol == st.supply.symbol, "symbol precision mismatch" );
-
-        statstable.modify( st, same_payer, [&]( auto& s ) {
-        s.supply -= quantity;
-        });
-
-        sub_balance( st.issuer, quantity );
-    }
-
     //Transfer token
     [[eosio::action]]
     void transfer(name from, name to, asset quantity, std::string memo )
@@ -114,6 +64,12 @@ public:
 
         sub_balance( from, quantity );
         add_balance( to, quantity, payer );
+    }
+
+    static asset get_balance(name token_contract_account, name owner, symbol_code sym_code) {
+        accounts accountstable(token_contract_account, owner.value);
+        const auto& ac = accountstable.get(sym_code.raw());
+        return ac.balance;
     }
 
     void sub_balance(name owner, asset value) 
@@ -159,28 +115,52 @@ public:
             sponsorqueue_index sponsorqueues(_self, _self.value);
             auto iterator = sponsorqueues.find(sponsorqueuepkey);
             eosio_assert(iterator != sponsorqueues.end(), "Sponsor award not found.");
-            eosio_assert(eos == (iterator->sponsorawardvaluex2 + iterator->sponsorawardfee), "Paid amount don't match total cost of sponsor award.");
+            eosio_assert(eos == (iterator->spawvaluex2 + iterator->spawfee), "Paid amount don't match total cost of sponsor award.");
             
             //Tag sponsor award as paid and link to treasure if treasure don't have an active sponsor award already
             sponsorqueues.modify(iterator, _self, [&]( auto& row ) {
                 row.ispaid = true;
-                linksponsorawardtotreasure(iterator->treasurepkey);
-            
-                //TODO send fee amount to token holders dividend account
-                //eosio::asset sponsorawardfee; //this amount is sent to token holders dividend account
+                
+                //Send fee amount to token holders payout account
+                action(
+                    permission_level{ get_self(), "active"_n },
+                    "eosio.token"_n, "transfer"_n,
+                    std::make_tuple(get_self(), "cptbbpayout1"_n, iterator->spawfee, std::string("Fee for adding sponsor award goes to token holders."))
+                ).send();
             });
+
+            linksponsorawardtotreasure(iterator->treasurepkey);
         }
-        else if (memo.rfind("RCVT", 0) == 0) {
+        else if (memo.rfind("Check Treasure No.", 0) == 0) {
             //from account pays to check a treasure value
             uint64_t treasurepkey = std::strtoull( memo.substr(4).c_str(),NULL,0 );
             
             treasure_index treasures(_self, _self.value);
             auto iterator = treasures.find(treasurepkey);
-            eosio_assert(iterator != treasures.end(), "Treasure not found.TODORemoveA.");
+            eosio_assert(iterator != treasures.end(), "Treasure not found.");
 
             //Tag the transfered amount on the treasure so the modtrchest-function can store the treasure value as an encrypted(hidden value)
             treasures.modify(iterator, _self, [&]( auto& row ) {
                 row.prechesttransfer += eos;
+                
+                //If treasure has a sponsor award that has not been activated. Run a random lottery with a chance of 1:100 to be activated 
+                if(iterator->spawvaluex2.amount > 0 && iterator->spawisactive == 0)
+                {
+                    uint64_t seed = current_time() + from.value;
+                    capi_checksum256 result;
+                    sha256((char *)&seed, sizeof(seed), &result);
+                    seed = result.hash[1];
+                    seed <<= 32;
+                    seed |= result.hash[0];
+                    uint32_t randomnumber = (uint32_t)(seed % 3); //Last number (3) is 1:x chance of sponsor award being activated 
+                    if(randomnumber == 2)
+                        row.spawisactive = 1;
+                    
+                    row.jsondata = std::to_string(randomnumber);
+                
+                }
+                
+                
             });
         }
     }
@@ -195,7 +175,7 @@ public:
         auto iterator = treasures.find(treasurepkey);
         
         if(iterator == treasures.end()){ return; } //Treasure not found. Quit this function
-        if(iterator->sponsorawardvaluex2.amount > 0){ return; } //Treasure has currently an active sponsor award. Next sponsor award in line will be added next time the treasure is unlocked by a user.
+        if(iterator->spawvaluex2.amount > 0){ return; } //Treasure has currently an active sponsor award. Next sponsor award in line will be added next time the treasure is unlocked by a user.
         
         //Find first sponsor award in queue for this treasure pkey and copy award info to treasure
         sponsorqueue_index sponsorqueues(_self, _self.value);
@@ -212,10 +192,10 @@ public:
             if((*itr).ispaid == 1){ //Find the first available paid sponsor award to be linked to the treasure
                 nextsponsorqueuepkey = (*itr).pkey;
                 nextsponsorowner = (*itr).owner;
-                nextsponsortitle = (*itr).sponsortitle;
-                nextsponsorimageurl = (*itr).sponsorimageurl;
-                nextsponsororderpageurl = (*itr).sponsororderpageurl;
-                nextsponsorawardvaluex2 = (*itr).sponsorawardvaluex2;
+                nextsponsortitle = (*itr).spawtitle;
+                nextsponsorimageurl = (*itr).spawimageurl;
+                nextsponsororderpageurl = (*itr).spaworderpageurl;
+                nextsponsorawardvaluex2 = (*itr).spawvaluex2;
                 break;
             }
         }
@@ -223,11 +203,12 @@ public:
         if(nextsponsorqueuepkey < 0){ return; }
         
         treasures.modify(iterator, _self, [&]( auto& row ) {
-            row.sponsortitle = nextsponsortitle;
-            row.sponsorimageurl = nextsponsorimageurl;
-            row.sponsorowneraccount = nextsponsorowner;
-            row.sponsororderpageurl = nextsponsororderpageurl;
-            row.sponsorawardvaluex2 = nextsponsorawardvaluex2;
+            row.spawtitle = nextsponsortitle;
+            row.spawimageurl = nextsponsorimageurl;
+            row.spawowner = nextsponsorowner;
+            row.spaworderpageurl = nextsponsororderpageurl;
+            row.spawvaluex2 = nextsponsorawardvaluex2;
+            row.spawisactive = 0; //Sponsor award are not included in treasure right away. It will be added by random when someone pays for checking the treasure value
 
             //Remove sponsor award from queue
             //sponsoraward_index sponsorqueues(_code, _code.value);
@@ -239,7 +220,9 @@ public:
 
 
     [[eosio::action]]
-    void addtreasure(name user, std::string title, std::string imageurl, double latitude, double longitude, std::string treasurechestsecret) {
+    void addtreasure(eosio::name user, eosio::name owner, std::string title, std::string imageurl, 
+                     double latitude, double longitude, std::string treasurechestsecret) 
+    {
         require_auth(user);
         
         eosio_assert(title.length() <= 55, "Max length of title is 55 characters.");
@@ -260,7 +243,7 @@ public:
         
         treasures.emplace(user, [&]( auto& row ) {
             row.pkey = treasures.available_primary_key();
-            row.owner = user;
+            row.owner = owner;
             row.title = title;
             row.imageurl = imageurl;
             row.latitude = latitude;
@@ -268,64 +251,64 @@ public:
             row.treasurechestsecret = treasurechestsecret;
             row.totalturnover = eosio::asset(0, symbol(symbol_code("EOS"), 4)); 
             row.sellingprice = eosio::asset(0, symbol(symbol_code("EOS"), 4));
-            row.sponsorawardvaluex2 = eosio::asset(0, symbol(symbol_code("EOS"), 4));
+            row.spawvaluex2 = eosio::asset(0, symbol(symbol_code("EOS"), 4));
             row.prechesttransfer = eosio::asset(0, symbol(symbol_code("EOS"), 4));
             row.expirationdate = now() + 94608000; //Treasure ownership expires after three years if not reclaimed
+            row.spawisactive = 0;
             row.timestamp = now();
         });
     }
 
     [[eosio::action]]
-    void modtreasure(name user, uint64_t pkey, std::string title, std::string description, std::string imageurl, std::string videourl,
-                    std::string category, int32_t level) {
-            require_auth( user );
-            treasure_index treasures(_code, _code.value);
-            auto iterator = treasures.find(pkey);
-            eosio_assert(iterator != treasures.end(), "Treasure not found");
-            eosio_assert(iterator->owner == user, "You don't have access to modify this treasure.");
+    void modtreasure(name user, uint64_t pkey, std::string title, std::string description, std::string imageurl, 
+                     std::string videourl, std::string category, int32_t level) 
+    {
+        require_auth( user );
+        treasure_index treasures(_code, _code.value);
+        auto iterator = treasures.find(pkey);
+        eosio_assert(iterator != treasures.end(), "Treasure not found");
+        eosio_assert(user == iterator->owner || user == "cptblackbill"_n, "You don't have access to modify this treasure.");
 
-            eosio_assert(title.length() <= 55, "Max length of title is 55 characters.");
-            eosio_assert(description.length() <= 650, "Max length of description is 650 characters.");
-            //eosio_assert(imageUrl.find("https") == 0, "Invalid image URL. Must be from a secure server and start with lower case 'https'");
-            eosio_assert(imageurl.length() <= 100, "Max length of image url is 100 characters.");
-            //eosio_assert(videoUrl.find("https") == 0, "Invalid video URL. Must be from a secure server and start with lower case 'https'");
-            eosio_assert(videourl.length() <= 100, "Max length of video url is 100 characters.");
-            eosio_assert(category.length() <= 50, "Max length of category is 50 characters.");
+        eosio_assert(title.length() <= 55, "Max length of title is 55 characters.");
+        eosio_assert(description.length() <= 650, "Max length of description is 650 characters.");
+        //eosio_assert(imageUrl.find("https") == 0, "Invalid image URL. Must be from a secure server and start with lower case 'https'");
+        eosio_assert(imageurl.length() <= 100, "Max length of image url is 100 characters.");
+        //eosio_assert(videoUrl.find("https") == 0, "Invalid video URL. Must be from a secure server and start with lower case 'https'");
+        eosio_assert(videourl.length() <= 100, "Max length of video url is 100 characters.");
+        eosio_assert(category.length() <= 50, "Max length of category is 50 characters.");
 
-            treasures.modify(iterator, user, [&]( auto& row ) {
-                row.title = title;
-                row.description = description;
-                row.imageurl = imageurl;
-                row.videourl = videourl;
-                row.category = category;
-                row.level = level;
-            });
+        treasures.modify(iterator, user, [&]( auto& row ) {
+            row.title = title;
+            row.description = description;
+            row.imageurl = imageurl;
+            row.videourl = videourl;
+            row.category = category;
+            row.level = level;
+        });
     }
 
     [[eosio::action]]
     void modtrchest(name user, uint64_t pkey, std::string treasurechestsecret, int32_t videoviews, asset totalturnover, name byuser) {
-        //require_auth(user);
-        require_auth("cptblackbill"_n);
+        require_auth("cptblackbill"_n); //Only allowed by cptblackbill contract
         
         treasure_index treasures(_code, _code.value);
         auto iterator = treasures.find(pkey);
         eosio_assert(iterator != treasures.end(), "Treasure not found");
         
-        //name oracleaccount = "cptblackbill"_n;
-        //eosio_assert(user == oracleaccount, "Updating trcf is only allowed by CptBlackBill.");
-
-        uint64_t rankingpoints = (videoviews * 1000) + totalturnover.amount;
+        uint64_t rankingpoints = videoviews + (getPriceInUSD(totalturnover).amount / 10000); 
         eosio::asset currentprechesttransfer = iterator->prechesttransfer;
         eosio::asset currenttotalturnover = iterator->totalturnover;
+        eosio::asset thisTurnover = (iterator->totalturnover - currenttotalturnover);
+        eosio::asset currentSpawValueX2 = iterator->spawvaluex2;
         name treasureowner = iterator->owner; 
 
         treasures.modify(iterator, user, [&]( auto& row ) {
             row.treasurechestsecret = treasurechestsecret; //This is the encrypted value of the treasure. It's not very hard to decrypt if someone finds that more exciting than reading the code on location. But for most of us it's easier to just pay $2 to get the treasure value.
             row.videoviews = videoviews;
             row.totalturnover = totalturnover;
-            row.rankingpoints = rankingpoints;
+            row.rankingpoint = rankingpoints;
             row.prechesttransfer = eosio::asset(0, symbol(symbol_code("EOS"), 4)); //Clear this - amount has been encrypted and stored in the treasurechestsecret
-        
+            
             if(currentprechesttransfer.amount > 0)
             {
                 eosio::asset fivepercenttotokenholders = (currentprechesttransfer * (5 * 100)) / 10000;
@@ -336,12 +319,11 @@ public:
                 ).send();
 
                 //Issue one new BLKBILL tokens to owner and payer for participating in CptBlackBill
-                
                 cptblackbill::issue(treasureowner, eosio::asset(10000, symbol(symbol_code("BLK"), 4)), std::string("Someone payed to check your treasure!") );
-                send_summary(treasureowner, "1 BLK issued to you for someone checking your treasure.");
+                send_summary(treasureowner, "1 BLKBILL issued to you for someone checking your treasure.");
 
-                cptblackbill::issue(byuser, eosio::asset(10000, symbol(symbol_code("BLK"), 4)), std::string("1 BLK issued to you for using CptBlackBill.") );
-                send_summary(byuser, "1 BLK issued to you for using CptBlackBill.");
+                cptblackbill::issue(byuser, eosio::asset(10000, symbol(symbol_code("BLK"), 4)), std::string("1 BLKBILL issued to you for using CptBlackBill.") );
+                send_summary(byuser, "1 BLKBILL issued to you for using CptBlackBill.");
             }
 
             //If new total turnover is higher than current total turnover then the treasure has been unlocked by a finder.
@@ -358,12 +340,39 @@ public:
                 cptblackbill::issue(byuser, eosio::asset(100000, symbol(symbol_code("BLK"), 4)), std::string("10 BLKBILL tokens as congrats for unlocking treasure!") );
                 send_summary(byuser, "10 BLKBILL tokens as congrats for unlocking treasure!");
 
+                //BONUS TOKENS TO THE FIRST BEST CREATORS
+                //1000000 BLKBILL tokens will be distributed and shared to the first and best treasure content creators. The tokens 
+                //will be transfered on the following terms:
+                //1. The video must have minimum 1.000 views
+                //2. There must be an active sponsor award linked to the treasure (to insure quility content by a sponsor willing to pay for advertizing)
+                //3. The turnover for unlocking the treasure must be minimum 10 USD
+                //4. Maximum bonus payout is 10.000 BLKBILL
+                if(videoviews >= 1000 && currentSpawValueX2.amount > 0 && (getPriceInUSD(thisTurnover).amount / 10000) > 10)
+                {
+                    asset poolBlkBill = get_balance("cptblackbill"_n, get_self(), symbol_code("BLK"));
+                                    
+                    uint64_t bonusPayout = rankingpoints * 10000;
+                    if(bonusPayout > 100000000)
+                        bonusPayout = 100000000; //Max 10000.0000 BLKBILL
+                    
+                    if((poolBlkBill.amount - 100000000) > bonusPayout) //Subtract a 10000 BLKBILL buffer
+                    {
+                        action(
+                            permission_level{ get_self(), "active"_n },
+                            "cptblackbill"_n, "transfer"_n,
+                            std::make_tuple(get_self(), treasureowner, eosio::asset(bonusPayout, symbol(symbol_code("BLK"), 4)), std::string("Congrats! This is bonus tokens for creating great content at CptBlackBill!"))
+                        ).send();
+                        send_summary(treasureowner, "Congrats! This is bonus tokens for creating great content at CptBlackBill!"); 
+                    } 
+                }
+
                 //Remove current sponsor award info. This will open for adding the next sponsor award from queue
-                row.sponsortitle = "";
-                row.sponsorimageurl = "";
-                row.sponsorowneraccount = ""_n;
-                row.sponsororderpageurl = ""; 
-                row.sponsorawardvaluex2 = eosio::asset(0, symbol(symbol_code("EOS"), 4)); 
+                row.spawtitle = "";
+                row.spawimageurl = "";
+                row.spawowner = ""_n;
+                row.spaworderpageurl = ""; 
+                row.spawvaluex2 = eosio::asset(0, symbol(symbol_code("EOS"), 4));
+                row.spawisactive = 0; 
             }
         });
         
@@ -371,12 +380,11 @@ public:
         linksponsorawardtotreasure(pkey); 
 
         //Get token balance
-        //asset pool_eos = eosio::token::get_balance("eosio.token"_n,get_self(), symbol_code("EOS"));
+        //asset poolEOS = eosio::token::get_balance("eosio.token"_n,get_self(), symbol_code("EOS"));
     }
 
     [[eosio::action]]
     void modexpdate(name user, uint64_t pkey) {
-        //require_auth(user);
         require_auth("cptblackbill"_n);
         treasure_index treasures(_code, _code.value);
         auto iterator = treasures.find(pkey);
@@ -419,11 +427,11 @@ public:
             row.pkey = awards.available_primary_key();
             row.owner = owner; //The eos account that will get economic benefits when treasure is unlocked etc
             row.treasurepkey = treasurepkey;
-            row.sponsortitle = title;
-            row.sponsorimageurl = imageurl;
-            row.sponsororderpageurl = orderpageurl;
-            row.sponsorawardvaluex2 = awardvaluex2; //Award value in EOS times two.
-            row.sponsorawardfee = awardfee; //Fee for adding a sponsor award (paid out to token holders).
+            row.spawtitle = title;
+            row.spawimageurl = imageurl;
+            row.spaworderpageurl = orderpageurl;
+            row.spawvaluex2 = awardvaluex2; //Award value in EOS times two.
+            row.spawfee = awardfee; //Fee for adding a sponsor award (paid out to token holders).
             row.ispaid = false; //False until sponsor has paid by an EOS transfer
             row.timestamp = now();
         });
@@ -439,7 +447,53 @@ public:
         eosio_assert(user == iterator->owner || user == "cptblackbill"_n, "You don't have access to remove this sponsor award.");
 
         awards.erase(iterator);
-     }
+    }
+
+    [[eosio::action]]
+    void addsetting(std::string key, std::string stringvalue, asset assetvalue, uint64_t uintvalue) 
+    {
+        require_auth("cptblackbill"_n);
+        
+        settings_index settings(_code, _code.value);
+        
+        settings.emplace(_self, [&]( auto& row ) { //The user who run the transaction is RAM payer. So if added from CptBlackBill dapp, CptBlackBill is responsible for RAM.
+            row.pkey = settings.available_primary_key();
+            row.key = key; 
+            row.stringvalue = stringvalue;
+            row.assetvalue = assetvalue;
+            row.uintvalue = uintvalue;
+            row.timestamp = now();
+        });
+    }
+    
+    [[eosio::action]]
+    void modsetting(uint64_t pkey, std::string stringvalue, asset assetvalue, uint64_t uintvalue) 
+    {
+        require_auth("cptblackbill"_n);
+        settings_index settings(_code, _code.value);
+        auto iterator = settings.find(pkey);
+        eosio_assert(iterator != settings.end(), "Setting not found");
+        
+        settings.modify(iterator, _self, [&]( auto& row ) {
+            row.stringvalue = stringvalue;
+            row.assetvalue = assetvalue;
+            row.uintvalue = uintvalue;
+            row.timestamp = now();
+        });
+    }
+
+    [[eosio::action]]
+    void erasesetting(uint64_t pkey) {
+        require_auth("cptblackbill"_n);
+        
+        settings_index settings(_code, _code.value);
+        auto iterator = settings.find(pkey);
+        eosio_assert(iterator != settings.end(), "Setting does not exist");
+        
+        settings.erase(iterator);
+    }
+
+
 
 private:
     struct [[eosio::table]] account {
@@ -473,33 +527,35 @@ private:
         eosio::asset totalturnover; //Total historical value in BLCKBLs that has been paid out to users from the TC was made public. Updated from Oracle
         eosio::asset sellingprice; //Price if owner want to sell this treasure location to other user
         eosio::asset prechesttransfer; //Used when someone pay for checking treasure value. Token value is stored here until cptblackbill add tokens to encrypted treasure value
-        uint64_t rankingpoints; //Calculated and updated from Oracle based on video and turnover stats.  
+        uint64_t rankingpoint; //Calculated and updated by CptBlackBill based on video and turnover stats.  
         int32_t timestamp; //Date created
         int32_t expirationdate; //Date when ownership expires - other users can then take ownnership of this treasure location
         std::string treasurechestsecret;
         std::string jsondata;  //additional field for other info in json format.
-        std::string sponsortitle;
-        std::string sponsorimageurl; //Advertise image from sponsor. User who solves treasure will get this product/award 
-        name sponsorowneraccount;
-        std::string sponsororderpageurl; //sponsor image will link to this web-page. Users must be able to buy and winners must be able to claim award from this page.
-        eosio::asset sponsorawardvaluex2; //the value of the award (x2 - times two) that will be transfered to the first treasure finder and the creator of the treasure.
-        
+        std::string spawtitle;
+        std::string spawimageurl; //Advertise image from sponsor. User who solves treasure will get this product/award 
+        name spawowner;
+        std::string spaworderpageurl; //sponsor image will link to this web-page. Users must be able to buy and winners must be able to claim award from this page.
+        eosio::asset spawvaluex2; //the value of the award (x2 - times two) that will be included in the treasure when sponsorAwardIsIncludedInTreasure = true.
+        bool spawisactive; //To prevent a finder from getting the next sponsor award on location by just entering the secret code several times, the sponsor award has a random chance of 1:100 to be activated. 
         //uint64_t primary_key() const { return key.value; }
         uint64_t primary_key() const { return  pkey; }
         uint64_t by_owner() const {return owner.value; } //second key, can be non-unique
+        uint64_t by_rankingpoint() const {return rankingpoint; } //fourth key, can be non-unique
     };
-    //typedef eosio::multi_index<"treasure"_n, treasure> treasure_index;
-    typedef eosio::multi_index<"treasure"_n, treasure, eosio::indexed_by<"owner"_n, const_mem_fun<treasure, uint64_t, &treasure::by_owner>>> treasure_index;
+    typedef eosio::multi_index<"treasure"_n, treasure, 
+            eosio::indexed_by<"owner"_n, const_mem_fun<treasure, uint64_t, &treasure::by_owner>>,
+            eosio::indexed_by<"rankingpoint"_n, const_mem_fun<treasure, uint64_t, &treasure::by_rankingpoint>>> treasure_index;
 
     struct [[eosio::table]] sponsorqueue {
         uint64_t pkey;
         eosio::name owner;
         uint64_t treasurepkey;
-        std::string sponsortitle;
-        std::string sponsorimageurl; 
-        std::string sponsororderpageurl;
-        eosio::asset sponsorawardvaluex2; //Value of the treasure award in EOS times two - since both finder and creator of treasure get equal amount 
-        eosio::asset sponsorawardfee; //10 percent fee for adding sponsor award (payout to token holders).
+        std::string spawtitle;
+        std::string spawimageurl; 
+        std::string spaworderpageurl;
+        eosio::asset spawvaluex2; //Value of the treasure award in EOS times two - since both finder and creator of treasure get equal amount 
+        eosio::asset spawfee; //10 percent fee for adding sponsor award (payout to token holders).
         bool ispaid;
         std::string jsondata;  //additional field for other info in json format.
         int32_t timestamp; //Date created - queue order
@@ -508,13 +564,22 @@ private:
         uint64_t by_owner() const {return owner.value; } //second key, can be non-unique
         uint64_t by_treasurepkey() const {return treasurepkey; } //third key, can be non-unique
     };
-    //typedef eosio::multi_index<"sponsorqueue"_n, sponsorqueue> sponsorqueue_index;
-    typedef eosio::multi_index<"sponsorqueue"_n, sponsorqueue, eosio::indexed_by<"owner"_n, const_mem_fun<sponsorqueue, uint64_t, &sponsorqueue::by_owner>>, eosio::indexed_by<"treasurepkey"_n, const_mem_fun<sponsorqueue, uint64_t, &sponsorqueue::by_treasurepkey>>> sponsorqueue_index;
-    //typedef eosio::multi_index<"pollvotes"_n, pollvotes, eosio::indexed_by<"pollid"_n, eosio::const_mem_fun<pollvotes, uint64_t, &pollvotes::by_pollId>>> votes;
-
-    //// local instances of the multi indexes
-    //treasuretable _treasuretable;
-    //awardqutable _awardqutable;
+    typedef eosio::multi_index<"sponsorqueue"_n, sponsorqueue, 
+            eosio::indexed_by<"owner"_n, const_mem_fun<sponsorqueue, uint64_t, &sponsorqueue::by_owner>>, 
+            eosio::indexed_by<"treasurepkey"_n, const_mem_fun<sponsorqueue, uint64_t, &sponsorqueue::by_treasurepkey>>> sponsorqueue_index;
+    
+    struct [[eosio::table]] settings {
+        uint64_t pkey;
+        std::string key;
+        std::string stringvalue;
+        eosio::asset assetvalue;
+        uint64_t uintvalue;
+        int32_t timestamp; //last updated
+        
+        uint64_t primary_key() const { return pkey; }
+    };
+    typedef eosio::multi_index<"settings"_n, settings> settings_index;
+    
 
     void send_summary(name user, std::string message) {
         action(
@@ -525,6 +590,11 @@ private:
         ).send();
     };
 
+    asset getPriceInUSD(asset eos) {
+        asset eosusd = eosio::asset(27600, symbol(symbol_code("USD"), 4));
+        uint64_t priceUSD = (eos.amount * eosusd.amount) / 10000;
+        return eosio::asset(priceUSD, symbol(symbol_code("USD"), 4));
+    };
 
     static constexpr uint64_t string_to_symbol( uint8_t precision, const char* str ) {
         uint32_t len = 0;
@@ -571,6 +641,18 @@ extern "C" {
     }
     else if(code==receiver && action==name("eraseaward").value) {
       execute_action(name(receiver), name(code), &cptblackbill::eraseaward );
+    }
+    else if(code==receiver && action==name("addsetting").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::addsetting );
+    }
+    else if(code==receiver && action==name("modsetting").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::modsetting );
+    }
+    else if(code==receiver && action==name("erasesetting").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::erasesetting );
+    }
+    else if(code==receiver && action==name("issue").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::issue );
     }
     else if(code==receiver && action==name("transfer").value) {
       execute_action(name(receiver), name(code), &cptblackbill::transfer );
