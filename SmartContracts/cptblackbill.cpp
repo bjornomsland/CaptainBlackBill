@@ -110,11 +110,13 @@ public:
 
         if (memo.rfind("Activate Sponsor Award No.", 0) == 0) {
             //from account pays for activating a sponsor award
-            uint64_t sponsorqueuepkey = std::strtoull( memo.substr(26).c_str(),NULL,0 );
+
+            uint64_t sponsorqueuepkey = std::strtoull( memo.substr(26).c_str(),NULL,0 ); //Find primary key from memo text
 
             sponsorqueue_index sponsorqueues(_self, _self.value);
             auto iterator = sponsorqueues.find(sponsorqueuepkey);
             eosio_assert(iterator != sponsorqueues.end(), "Sponsor award not found.");
+            eosio_assert(eos >= getMinimumSponsorWardInEOS(), "Paid amount is below minimum sponsor award value.");
             eosio_assert(eos == (iterator->spawvaluex2 + iterator->spawfee), "Paid amount don't match total cost of sponsor award.");
             
             //Tag sponsor award as paid and link to treasure if treasure don't have an active sponsor award already
@@ -133,7 +135,10 @@ public:
         }
         else if (memo.rfind("Check Treasure No.", 0) == 0) {
             //from account pays to check a treasure value
-            uint64_t treasurepkey = std::strtoull( memo.substr(4).c_str(),NULL,0 );
+
+            eosio_assert(eos >= getPriceForCheckTreasureValueInEOS(), "Transfered amount is below minimum price for checking treasure value.");
+            
+            uint64_t treasurepkey = std::strtoull( memo.substr(4).c_str(),NULL,0 ); //Find treasure pkey from transfer memo
             
             treasure_index treasures(_self, _self.value);
             auto iterator = treasures.find(treasurepkey);
@@ -152,7 +157,7 @@ public:
                     seed = result.hash[1];
                     seed <<= 32;
                     seed |= result.hash[0];
-                    uint32_t randomnumber = (uint32_t)(seed % 3); //Last number (3) is 1:x chance of sponsor award being activated 
+                    uint32_t randomnumber = (uint32_t)(seed % getRndSponsorActivationNumber()); //Last number (3) is 1:x chance of sponsor award being activated 
                     if(randomnumber == 2)
                         row.spawisactive = 1;
                     
@@ -308,7 +313,8 @@ public:
             row.totalturnover = totalturnover;
             row.rankingpoint = rankingpoints;
             row.prechesttransfer = eosio::asset(0, symbol(symbol_code("EOS"), 4)); //Clear this - amount has been encrypted and stored in the treasurechestsecret
-            
+            //row.jsondata = std::to_string( getPriceInUSD(  eosio::asset(10000, symbol(symbol_code("EOS"), 4))  ).amount ); Just for testing - remove
+
             if(currentprechesttransfer.amount > 0)
             {
                 eosio::asset fivepercenttotokenholders = (currentprechesttransfer * (5 * 100)) / 10000;
@@ -345,8 +351,8 @@ public:
                 //will be transfered on the following terms:
                 //1. The video must have minimum 1.000 views
                 //2. There must be an active sponsor award linked to the treasure (to insure quility content by a sponsor willing to pay for advertizing)
-                //3. The turnover for unlocking the treasure must be minimum 10 USD
-                //4. Maximum bonus payout is 10.000 BLKBILL
+                //4. The turnover for unlocking the treasure must be minimum 10 USD
+                //5. Maximum bonus payout is 10.000 BLKBILL
                 if(videoviews >= 1000 && currentSpawValueX2.amount > 0 && (getPriceInUSD(thisTurnover).amount / 10000) > 10)
                 {
                     asset poolBlkBill = get_balance("cptblackbill"_n, get_self(), symbol_code("BLK"));
@@ -450,15 +456,15 @@ public:
     }
 
     [[eosio::action]]
-    void addsetting(std::string key, std::string stringvalue, asset assetvalue, uint64_t uintvalue) 
+    void addsetting(name keyname, std::string stringvalue, asset assetvalue, uint32_t uintvalue) 
     {
         require_auth("cptblackbill"_n);
         
         settings_index settings(_code, _code.value);
         
         settings.emplace(_self, [&]( auto& row ) { //The user who run the transaction is RAM payer. So if added from CptBlackBill dapp, CptBlackBill is responsible for RAM.
-            row.pkey = settings.available_primary_key();
-            row.key = key; 
+            row.keyname = keyname; // pkey = settings.available_primary_key();
+            //row.key = key; 
             row.stringvalue = stringvalue;
             row.assetvalue = assetvalue;
             row.uintvalue = uintvalue;
@@ -467,11 +473,11 @@ public:
     }
     
     [[eosio::action]]
-    void modsetting(uint64_t pkey, std::string stringvalue, asset assetvalue, uint64_t uintvalue) 
+    void modsetting(name keyname, std::string stringvalue, asset assetvalue, uint32_t uintvalue) 
     {
         require_auth("cptblackbill"_n);
         settings_index settings(_code, _code.value);
-        auto iterator = settings.find(pkey);
+        auto iterator = settings.find(keyname.value);
         eosio_assert(iterator != settings.end(), "Setting not found");
         
         settings.modify(iterator, _self, [&]( auto& row ) {
@@ -483,11 +489,11 @@ public:
     }
 
     [[eosio::action]]
-    void erasesetting(uint64_t pkey) {
+    void erasesetting(name keyname) {
         require_auth("cptblackbill"_n);
         
         settings_index settings(_code, _code.value);
-        auto iterator = settings.find(pkey);
+        auto iterator = settings.find(keyname.value);
         eosio_assert(iterator != settings.end(), "Setting does not exist");
         
         settings.erase(iterator);
@@ -569,14 +575,13 @@ private:
             eosio::indexed_by<"treasurepkey"_n, const_mem_fun<sponsorqueue, uint64_t, &sponsorqueue::by_treasurepkey>>> sponsorqueue_index;
     
     struct [[eosio::table]] settings {
-        uint64_t pkey;
-        std::string key;
+        eosio::name keyname; 
         std::string stringvalue;
         eosio::asset assetvalue;
-        uint64_t uintvalue;
+        uint32_t uintvalue;
         int32_t timestamp; //last updated
         
-        uint64_t primary_key() const { return pkey; }
+        uint64_t primary_key() const { return keyname.value; }
     };
     typedef eosio::multi_index<"settings"_n, settings> settings_index;
     
@@ -590,11 +595,68 @@ private:
         ).send();
     };
 
+    //---Get dapp settings---------------------------------------------------------------------------------
     asset getPriceInUSD(asset eos) {
-        asset eosusd = eosio::asset(27600, symbol(symbol_code("USD"), 4));
+        asset eosusd = eosio::asset(27600, symbol(symbol_code("USD"), 4)); //default value
+        
+        //Get settings from table if exists. If not, default value is used
+        settings_index settings(_self, _self.value);
+        auto iterator = settings.find(name("eosusd").value); 
+        if(iterator != settings.end()){
+            eosusd = iterator->assetvalue;    
+        }
+                 
         uint64_t priceUSD = (eos.amount * eosusd.amount) / 10000;
         return eosio::asset(priceUSD, symbol(symbol_code("USD"), 4));
     };
+
+    uint32_t getRndSponsorActivationNumber() {
+        uint32_t rndSponsorActivation = 100; //default value 1:100 chance of sponsor award being activated
+        
+        //Get settings from table if exists. If not, default value is used
+        settings_index settings(_self, _self.value);
+        auto iterator = settings.find(name("rndsponsorac").value); 
+        if(iterator != settings.end()){
+            rndSponsorActivation = iterator->uintvalue;    
+        }
+        
+        return rndSponsorActivation;
+    };
+
+    asset getPriceForCheckTreasureValueInEOS() {
+        asset eosusd = eosio::asset(27600, symbol(symbol_code("USD"), 4)); //default value
+        asset priceForCheckingTreasureValueInUSD = eosio::asset(20000, symbol(symbol_code("USD"), 4)); //default value for checking a treasure chest value
+        
+        //Get settings from table if exists. If not, default value is used
+        settings_index settings(_self, _self.value);
+        auto iterator = settings.find(name("eosusd").value); 
+        if(iterator != settings.end()){
+            eosusd = iterator->assetvalue;    
+        }
+        
+        //settings_index settings(_self, _self.value);
+        auto iterator2 = settings.find(name("checktreasur").value); 
+        if(iterator2 != settings.end()){
+            priceForCheckingTreasureValueInUSD = iterator2->assetvalue;    
+        }
+                 
+        uint64_t priceInEOS = (priceForCheckingTreasureValueInUSD.amount / eosusd.amount) / 10000;
+        return eosio::asset(priceInEOS, symbol(symbol_code("EOS"), 4));
+    };
+
+    asset getMinimumSponsorWardInEOS() {
+        asset minimumSponsorWardInEOS = eosio::asset(10000, symbol(symbol_code("EOS"), 4)); //default minimum sponsor award 1EOS
+        
+        //Get settings from table if exists. If not, default value is used
+        settings_index settings(_self, _self.value);
+        auto iterator = settings.find(name("minsponsoraw").value); 
+        if(iterator != settings.end()){
+            minimumSponsorWardInEOS = iterator->assetvalue;    
+        }
+        
+        return minimumSponsorWardInEOS;
+    };
+    //-----------------------------------------------------------------------------------------------------
 
     static constexpr uint64_t string_to_symbol( uint8_t precision, const char* str ) {
         uint32_t len = 0;
