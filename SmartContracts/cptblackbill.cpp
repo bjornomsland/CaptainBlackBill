@@ -146,6 +146,11 @@ public:
             //Tag the transfered amount on the treasure so the modtrchest-function can store the treasure value as an encrypted(hidden value)
             treasures.modify(iterator, _self, [&]( auto& row ) {
                 row.prechesttransfer += eos;
+
+                //If treasure is not activated (rankingpoint=0) and transfer is from owner, then activate treasure
+                if(iterator->rankingpoint == 0 && iterator->owner == from){
+                    row.rankingpoint = 1;
+                } 
                 
                 //If treasure has a sponsor award that has not been activated. Run a random lottery with a chance of 1:100 to be activated 
                 if(iterator->spawvaluex2.amount > 0 && iterator->spawisactive == 0)
@@ -160,7 +165,7 @@ public:
                     if(randomnumber == 2)
                         row.spawisactive = 1;
                     
-                    row.jsondata = std::to_string(randomnumber);
+                    //row.jsondata = std::to_string(randomnumber);
                 
                 }
             });
@@ -295,10 +300,15 @@ public:
         auto iterator = treasures.find(pkey);
         eosio_assert(iterator != treasures.end(), "Treasure not found");
         
-        uint64_t rankingpoints = videoviews + (getPriceInUSD(totalturnover).amount / 10000); 
+        
+        uint64_t rankingpoints = pow( (getPriceInUSD(totalturnover).amount / 10000), 0.8); //Turnover value gives exponential ranking points
+        if(videoviews > 0){
+            rankingpoints = rankingpoints * pow(videoviews, 0.3); //Number of video views has exponential power, but less than turnover   
+        }
+        
         eosio::asset currentprechesttransfer = iterator->prechesttransfer;
         eosio::asset currenttotalturnover = iterator->totalturnover;
-        eosio::asset thisTurnover = (iterator->totalturnover - currenttotalturnover);
+        eosio::asset thisTurnover = (totalturnover - iterator->totalturnover); //This is the current treasure chest value and will be paid out equally to the finder and the creator
         eosio::asset currentSpawValueX2 = iterator->spawvaluex2;
         name treasureowner = iterator->owner; 
 
@@ -308,7 +318,7 @@ public:
             row.totalturnover = totalturnover;
             row.rankingpoint = rankingpoints;
             row.prechesttransfer = eosio::asset(0, symbol(symbol_code("EOS"), 4)); //Clear this - amount has been encrypted and stored in the treasurechestsecret
-
+            
             if(currentprechesttransfer.amount > 0) //Someone has paid (transeferd EOS to CptBlackBill) to check a treasure value
             {
                 //Transfer five percent of the transfered EOS to the token holders payout account
@@ -316,11 +326,11 @@ public:
                 action(
                     permission_level{ get_self(), "active"_n },
                     "eosio.token"_n, "transfer"_n,
-                    std::make_tuple(get_self(), "cptbbpayout1"_n, fivepercenttotokenholders, std::string("five percent to token holders"))
+                    std::make_tuple(get_self(), "cptbbpayout1"_n, fivepercenttotokenholders, std::string("Five percent cut to token holders payout account"))
                 ).send();
 
                 //Issue one new BLKBILL tokens to owner and payer for participating in CptBlackBill
-                cptblackbill::issue(treasureowner, eosio::asset(10000, symbol(symbol_code("BLKBILL"), 4)), std::string("Someone payed to check your treasure!") );
+                cptblackbill::issue(treasureowner, eosio::asset(10000, symbol(symbol_code("BLKBILL"), 4)), std::string("Someone paid to check your treasure!") );
                 send_summary(treasureowner, "1 BLKBILL issued to you for someone checking your treasure.");
 
                 cptblackbill::issue(byuser, eosio::asset(10000, symbol(symbol_code("BLKBILL"), 4)), std::string("1 BLKBILL issued to you for using CptBlackBill.") );
@@ -328,45 +338,50 @@ public:
             }
 
             //If new total turnover is higher than current total turnover then the treasure has been unlocked by a finder.
-            if(totalturnover > currenttotalturnover) //This makes it impossible to click unlock treasure several times in a row to get 10 BLKBILL for free. 
+            //if(totalturnover > currenttotalturnover) //This makes it impossible to click unlock treasure several times in a row to get 10 BLKBILL for free. 
+            if(thisTurnover.amount > 0) 
             {
-                //Treasure has been unlocked by <byuser>. This has high participating value and both users get 10 new BLKBILL tokens
+                //Treasure has been unlocked by <byuser>. 
 
-                //The EOS transactions that transfer the treasure chest value to finder and creator is
-                //run as two separate transactions in the dapp (if not, the transaction is not visible on the receiver accounts) 
-                
-                cptblackbill::issue(treasureowner, eosio::asset(100000, symbol(symbol_code("BLKBILL"), 4)), std::string("10 BLKBILL tokens for someone solving your treasure.") );
-                send_summary(treasureowner, "10 BLKBILL tokens for someone solving your treasure.");
+                //Transfer treasure chest value to the user who unlocked the treasure
+                action(
+                    permission_level{ get_self(), "active"_n },
+                    "eosio.token"_n, "transfer"_n,
+                    std::make_tuple(get_self(), byuser, thisTurnover, std::string("Congrats for solving Treasure No." + std::to_string(pkey) + " on CptBlackBill!"))
+                ).send();
 
+                //Transfer the same amount to the user who created the treasure
+                action(
+                    permission_level{ get_self(), "active"_n },
+                    "eosio.token"_n, "transfer"_n,
+                    std::make_tuple(get_self(), treasureowner, thisTurnover, std::string("Congrats! Your Treasure No." + std::to_string(pkey) + " has been solved. This is your equal share of the treasure chest."))
+                ).send();
+
+                //Reward finder for using CptBlackBill
                 cptblackbill::issue(byuser, eosio::asset(100000, symbol(symbol_code("BLKBILL"), 4)), std::string("10 BLKBILL tokens as congrats for unlocking treasure!") );
-                send_summary(byuser, "10 BLKBILL tokens as congrats for unlocking treasure!");
-
-                //BONUS TOKENS TO THE FIRST BEST CREATORS
-                //1000000 BLKBILL tokens will be distributed and shared to the first and best treasure content creators. The tokens 
-                //will be transfered on the following terms:
-                //1. The video must have minimum 1.000 views
-                //2. There must be an active sponsor award linked to the treasure (to insure quility content by a sponsor willing to pay for advertizing)
-                //4. The turnover for unlocking the treasure must be minimum 10 USD
-                //5. Maximum bonus payout is 10.000 BLKBILL
-                if(videoviews >= 1000 && currentSpawValueX2.amount > 0 && (getPriceInUSD(thisTurnover).amount / 10000) > 10)
+                send_summary(byuser, "10 BLKBILL tokens as congrats for unlocking a treasure!");
+                
+                //Reward creator for creating content 
+                //BONUS TOKENS TO CREATORS
+                asset poolBlkBill = get_balance("cptblackbill"_n, get_self(), symbol_code("BLKBILL"));
+                uint64_t bonusPayout = pow( (getPriceInUSD(thisTurnover).amount / 10000), 1.2) * rankingpoints;
+                if(bonusPayout > 100000000)
+                    bonusPayout = 100000000; //Max 10000.0000 BLKBILL in bonus payout
+                
+                if(bonusPayout > 0 && (poolBlkBill.amount - 100000000) > bonusPayout) //Subtract a 10000 BLKBILL buffer
                 {
-                    asset poolBlkBill = get_balance("cptblackbill"_n, get_self(), symbol_code("BLKBILL"));
-                                    
-                    uint64_t bonusPayout = rankingpoints * 10000;
-                    if(bonusPayout > 100000000)
-                        bonusPayout = 100000000; //Max 10000.0000 BLKBILL
-                    
-                    if((poolBlkBill.amount - 100000000) > bonusPayout) //Subtract a 10000 BLKBILL buffer
-                    {
-                        action(
-                            permission_level{ get_self(), "active"_n },
-                            "cptblackbill"_n, "transfer"_n,
-                            std::make_tuple(get_self(), treasureowner, eosio::asset(bonusPayout, symbol(symbol_code("BLKBILL"), 4)), std::string("Congrats! This is bonus tokens for creating great content at CptBlackBill!"))
-                        ).send();
-                        send_summary(treasureowner, "Congrats! This is bonus tokens for creating great content at CptBlackBill!"); 
-                    } 
+                    action(
+                        permission_level{ get_self(), "active"_n },
+                        "cptblackbill"_n, "transfer"_n,
+                        std::make_tuple(get_self(), treasureowner, eosio::asset(bonusPayout, symbol(symbol_code("BLKBILL"), 4)), std::string("Congrats! This is bonus tokens for creating great content at CptBlackBill!"))
+                    ).send();
+                    send_summary(treasureowner, "Congrats! This is bonus tokens for creating great content at CptBlackBill!"); 
                 }
-
+                else{
+                    cptblackbill::issue(treasureowner, eosio::asset(100000, symbol(symbol_code("BLKBILL"), 4)), std::string("10 BLKBILL tokens for someone solving your treasure.") );
+                    send_summary(treasureowner, "10 BLKBILL tokens for someone solving your treasure.");
+                } 
+                
                 //Remove current sponsor award info. This will open for adding the next sponsor award from queue
                 row.spawtitle = "";
                 row.spawimageurl = "";
@@ -626,7 +641,7 @@ private:
             priceForCheckingTreasureValueInUSD = iterator2->assetvalue;    
         }
                  
-        uint64_t priceInEOS = (priceForCheckingTreasureValueInUSD.amount / eosusd.amount) / 10000;
+        uint64_t priceInEOS = (priceForCheckingTreasureValueInUSD.amount / eosusd.amount) / 10000; //TODO: Check if this results in a larger amont of EOS and should be divided more
         return eosio::asset(priceInEOS, symbol(symbol_code("EOS"), 4));
     };
 
