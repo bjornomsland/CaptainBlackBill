@@ -137,7 +137,7 @@ public:
 
             eosio_assert(eos >= getPriceForCheckTreasureValueInEOS(), "Transfered amount is below minimum price for checking treasure value.");
             
-            uint64_t treasurepkey = std::strtoull( memo.substr(4).c_str(),NULL,0 ); //Find treasure pkey from transfer memo
+            uint64_t treasurepkey = std::strtoull( memo.substr(18).c_str(),NULL,0 ); //Find treasure pkey from transfer memo
             
             treasure_index treasures(_self, _self.value);
             auto iterator = treasures.find(treasurepkey);
@@ -161,7 +161,7 @@ public:
                     seed = result.hash[1];
                     seed <<= 32;
                     seed |= result.hash[0];
-                    uint32_t randomnumber = (uint32_t)(seed % getRndSponsorActivationNumber()); //Last number (3) is 1:x chance of sponsor award being activated 
+                    uint32_t randomnumber = (uint32_t)(seed % getRndSponsorActivationNumber()); //getRndSponsorActivationNumber is 1:x chance of sponsor award being activated 
                     if(randomnumber == 2)
                         row.spawisactive = 1;
                     
@@ -295,16 +295,26 @@ public:
     [[eosio::action]]
     void modtrchest(name user, uint64_t pkey, std::string treasurechestsecret, int32_t videoviews, asset totalturnover, name byuser) {
         require_auth("cptblackbill"_n); //Only allowed by cptblackbill contract
-        
+
+        //TODO
+        //TreasureChestSecret is encrypted in the DAPP together with the hidden treasure amount. These values must be 
+        //hidden from users or else the secret code is visible on the blockchain and the user has less insentive to pay for checking the treasure value
+        //The project privEOS (https://www.slant.li/priveos/) can maybe solve this problem in the future (estimated Q3 2019 from privEOS)
+
         treasure_index treasures(_code, _code.value);
         auto iterator = treasures.find(pkey);
         eosio_assert(iterator != treasures.end(), "Treasure not found");
-        
-        
+                
         uint64_t rankingpoints = pow( (getPriceInUSD(totalturnover).amount / 10000), 0.8); //Turnover value gives exponential ranking points
         if(videoviews > 0){
             rankingpoints = rankingpoints * pow(videoviews, 0.3); //Number of video views has exponential power, but less than turnover   
         }
+
+        //Updated 2018-december 28
+        //If current rankingpoints is 1 or higher the treasure has been activated and can not be set back to 0 ranking points
+        if(rankingpoints <= 0 && iterator->rankingpoint > 0){
+            rankingpoints = 1; //Never set ranking points back to zero if treasure is activated.
+        } 
         
         eosio::asset currentprechesttransfer = iterator->prechesttransfer;
         eosio::asset currenttotalturnover = iterator->totalturnover;
@@ -331,10 +341,10 @@ public:
 
                 //Issue one new BLKBILL tokens to owner and payer for participating in CptBlackBill
                 cptblackbill::issue(treasureowner, eosio::asset(10000, symbol(symbol_code("BLKBILL"), 4)), std::string("Someone paid to check your treasure!") );
-                send_summary(treasureowner, "1 BLKBILL issued to you for someone checking your treasure.");
+                send_summary(treasureowner, "1 BLKBILL to you for someone checking your treasure value.");
 
-                cptblackbill::issue(byuser, eosio::asset(10000, symbol(symbol_code("BLKBILL"), 4)), std::string("1 BLKBILL issued to you for using CptBlackBill.") );
-                send_summary(byuser, "1 BLKBILL issued to you for using CptBlackBill.");
+                cptblackbill::issue(byuser, eosio::asset(10000, symbol(symbol_code("BLKBILL"), 4)), std::string("1 BLKBILL to you for using CptBlackBill.") );
+                send_summary(byuser, "1 BLKBILL to you for using CptBlackBill.");
             }
 
             //If new total turnover is higher than current total turnover then the treasure has been unlocked by a finder.
