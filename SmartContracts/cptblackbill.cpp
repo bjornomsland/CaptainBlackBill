@@ -304,7 +304,8 @@ public:
         treasure_index treasures(_code, _code.value);
         auto iterator = treasures.find(pkey);
         eosio_assert(iterator != treasures.end(), "Treasure not found");
-                
+
+        uint64_t bonusPayout = 0;    
         uint64_t rankingpoints = pow( (getPriceInUSD(totalturnover).amount / 10000), 0.8); //Turnover value gives exponential ranking points
         if(videoviews > 0){
             rankingpoints = rankingpoints * pow(videoviews, 0.3); //Number of video views has exponential power, but less than turnover   
@@ -374,7 +375,7 @@ public:
                 //Reward creator for creating content 
                 //BONUS TOKENS TO CREATORS
                 asset poolBlkBill = get_balance("cptblackbill"_n, get_self(), symbol_code("BLKBILL"));
-                uint64_t bonusPayout = pow( (getPriceInUSD(thisTurnover).amount / 10000), 1.2) * rankingpoints;
+                bonusPayout = pow( (getPriceInUSD(thisTurnover).amount / 10000), 1.2) * rankingpoints;
                 if(bonusPayout > 100000000)
                     bonusPayout = 100000000; //Max 10000.0000 BLKBILL in bonus payout
                 
@@ -388,8 +389,9 @@ public:
                     send_summary(treasureowner, "Congrats! This is bonus tokens for creating great content at CptBlackBill!"); 
                 }
                 else{
-                    cptblackbill::issue(treasureowner, eosio::asset(100000, symbol(symbol_code("BLKBILL"), 4)), std::string("10 BLKBILL tokens for someone solving your treasure.") );
-                    send_summary(treasureowner, "10 BLKBILL tokens for someone solving your treasure.");
+                    bonusPayout = 100000;
+                    cptblackbill::issue(treasureowner, eosio::asset(bonusPayout, symbol(symbol_code("BLKBILL"), 4)), std::string("10 BLKBILLs for someone solving your treasure.") );
+                    send_summary(treasureowner, "10 BLKBILLs for someone solving your treasure.");
                 } 
                 
                 //Remove current sponsor award info. This will open for adding the next sponsor award from queue
@@ -398,7 +400,19 @@ public:
                 row.spawowner = ""_n;
                 row.spaworderpageurl = ""; 
                 row.spawvaluex2 = eosio::asset(0, symbol(symbol_code("EOS"), 4));
-                row.spawisactive = 0; 
+                row.spawisactive = 0;
+                row.jsondata = std::to_string(bonusPayout);
+                
+                //Update 2018-12-28 Add user who unlocked tresure to the result table for easy access on scoreboard in dapp
+                results_index results(_code, _code.value);
+                results.emplace(_self, [&]( auto& row ) { 
+                    row.pkey = results.available_primary_key();
+                    row.user = byuser; //The eos account that found and unlocked the treasure
+                    row.treasurepkey = pkey;
+                    row.payouteos = thisTurnover;
+                    row.minedblkbills = eosio::asset(bonusPayout, symbol(symbol_code("BLKBILL"), 4));
+                    row.timestamp = now();
+                }); 
             }
         });
         
@@ -513,6 +527,16 @@ public:
         settings.erase(iterator);
     }
 
+    [[eosio::action]]
+    void eraseresult(name user, uint64_t pkey) {
+        require_auth("cptblackbill"_n);
+        
+        results_index results(_code, _code.value);
+        auto iterator = results.find(pkey);
+        eosio_assert(iterator != results.end(), "Result does not exist.");
+        results.erase(iterator);
+    }
+
 private:
     struct [[eosio::table]] account {
         asset    balance;
@@ -597,6 +621,22 @@ private:
     };
     typedef eosio::multi_index<"settings"_n, settings> settings_index;
     
+    struct [[eosio::table]] results {
+        uint64_t pkey;
+        uint64_t treasurepkey;
+        eosio::name user;
+        std::string trxid;
+        eosio::asset payouteos;
+        eosio::asset minedblkbills;
+        int32_t timestamp; //Date created - queue order
+        
+        uint64_t primary_key() const { return  pkey; }
+        uint64_t by_user() const {return user.value; } //second key, can be non-unique
+        uint64_t by_treasurepkey() const {return treasurepkey; } //third key, can be non-unique
+    };
+    typedef eosio::multi_index<"results"_n, results, 
+            eosio::indexed_by<"user"_n, const_mem_fun<results, uint64_t, &results::by_user>>, 
+            eosio::indexed_by<"treasurepkey"_n, const_mem_fun<results, uint64_t, &results::by_treasurepkey>>> results_index;
 
     void send_summary(name user, std::string message) {
         action(
@@ -722,6 +762,9 @@ extern "C" {
     }
     else if(code==receiver && action==name("erasesetting").value) {
       execute_action(name(receiver), name(code), &cptblackbill::erasesetting );
+    }
+    else if(code==receiver && action==name("eraseresult").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::eraseresult );
     }
     else if(code==receiver && action==name("issue").value) {
       execute_action(name(receiver), name(code), &cptblackbill::issue );
