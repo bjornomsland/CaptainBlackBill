@@ -1,2 +1,2 @@
 # CaptainBlackBill
-Treasure hunting challenge dApp on the EOS blockchain
+Treasure hunting dApp on the EOS blockchain
