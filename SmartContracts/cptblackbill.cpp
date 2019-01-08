@@ -162,8 +162,10 @@ public:
                     seed <<= 32;
                     seed |= result.hash[0];
                     uint32_t randomnumber = (uint32_t)(seed % getRndSponsorActivationNumber()); //getRndSponsorActivationNumber is 1:x chance of sponsor award being activated 
-                    if(randomnumber == 2)
+                    row.jsondata = "RandomNumber: " + std::to_string(randomnumber);
+                    if(randomnumber == 1){
                         row.spawisactive = 1;
+                    }
                     
                     //row.jsondata = std::to_string(randomnumber);
                 
@@ -375,7 +377,7 @@ public:
                 //Reward creator for creating content 
                 //BONUS TOKENS TO CREATORS
                 asset poolBlkBill = get_balance("cptblackbill"_n, get_self(), symbol_code("BLKBILL"));
-                bonusPayout = pow( (getPriceInUSD(thisTurnover).amount / 10000), 1.2) * rankingpoints;
+                bonusPayout = pow( (getPriceInUSD(thisTurnover).amount), 1.2) * rankingpoints; //Update 2018-12-30 Removed /10000 on getPriceInUsd
                 if(bonusPayout > 100000000)
                     bonusPayout = 100000000; //Max 10000.0000 BLKBILL in bonus payout
                 
@@ -401,7 +403,7 @@ public:
                 row.spaworderpageurl = ""; 
                 row.spawvaluex2 = eosio::asset(0, symbol(symbol_code("EOS"), 4));
                 row.spawisactive = 0;
-                row.jsondata = std::to_string(bonusPayout);
+                //row.jsondata = std::to_string(bonusPayout);
                 
                 //Update 2018-12-28 Add user who unlocked tresure to the result table for easy access on scoreboard in dapp
                 results_index results(_code, _code.value);
@@ -410,6 +412,7 @@ public:
                     row.user = byuser; //The eos account that found and unlocked the treasure
                     row.treasurepkey = pkey;
                     row.payouteos = thisTurnover;
+                    row.eosusdprice = getEosUsdPrice(); //2019-01-08
                     row.minedblkbills = eosio::asset(bonusPayout, symbol(symbol_code("BLKBILL"), 4));
                     row.timestamp = now();
                 }); 
@@ -627,6 +630,7 @@ private:
         eosio::name user;
         std::string trxid;
         eosio::asset payouteos;
+        eosio::asset eosusdprice;
         eosio::asset minedblkbills;
         int32_t timestamp; //Date created - queue order
         
@@ -648,6 +652,18 @@ private:
     };
 
     //---Get dapp settings---------------------------------------------------------------------------------
+    asset getEosUsdPrice() {
+        asset eosusd = eosio::asset(0, symbol(symbol_code("USD"), 4)); //default value
+        
+        //Get settings from table if exists. If not, default value is used
+        settings_index settings(_self, _self.value);
+        auto iterator = settings.find(name("eosusd").value); 
+        if(iterator != settings.end()){
+            eosusd = iterator->assetvalue;    
+        }
+        return eosusd;
+    };
+    
     asset getPriceInUSD(asset eos) {
         asset eosusd = eosio::asset(27600, symbol(symbol_code("USD"), 4)); //default value
         
