@@ -128,6 +128,13 @@ public:
                     "eosio.token"_n, "transfer"_n,
                     std::make_tuple(get_self(), "cptbbpayout1"_n, iterator->spawfee, std::string("Fee for adding sponsor award goes to token holders."))
                 ).send();
+
+                //Sponsors get equal amount in BLKBILLs as the value of Sponsor Award in USD
+                action(
+                    permission_level{ get_self(), "active"_n },
+                    "cptblackbill"_n, "issue"_n,
+                    std::make_tuple(from, eosio::asset(getPriceInUSD(eos).amount, symbol(symbol_code("BLKBILL"), 4)), std::string("BLKBILLs for activating sponsor award."))
+                ).send();
             });
 
             linksponsorawardtotreasure(iterator->treasurepkey);
@@ -391,7 +398,13 @@ public:
                     send_summary(treasureowner, "Congrats! This is bonus tokens for creating great content at CptBlackBill!"); 
                 }
                 else{
-                    bonusPayout = 100000;
+                    if(rankingpoints > 1000)
+                        bonusPayout = 10000000; //1000 BLKBILLs
+                    else if (rankingpoints > 100)
+                        bonusPayout = 1000000; //100 BLKBILLs
+                    else
+                        bonusPayout = 100000; //10 BLKBILLs
+
                     cptblackbill::issue(treasureowner, eosio::asset(bonusPayout, symbol(symbol_code("BLKBILL"), 4)), std::string("10 BLKBILLs for someone solving your treasure.") );
                     send_summary(treasureowner, "10 BLKBILLs for someone solving your treasure.");
                 } 
@@ -540,6 +553,38 @@ public:
         results.erase(iterator);
     }
 
+    [[eosio::action]]
+    void upsertcrew(name user, std::string imagehash, std::string quote) 
+    {
+        require_auth( user );
+        crewinfo_index crewinfo(_code, _code.value);
+        auto iterator = crewinfo.find(user.value);
+        if( iterator == crewinfo.end() )
+        {
+            crewinfo.emplace(user, [&]( auto& row ) {
+                row.user = user;
+                row.imagehash = imagehash;
+                row.quote = quote;
+            });
+        }
+        else {
+            crewinfo.modify(iterator, user, [&]( auto& row ) {
+                row.imagehash = imagehash;
+                row.quote = quote;
+            });
+        }
+    }
+
+    [[eosio::action]]
+    void erasecrew(name user) {
+        require_auth( user );
+        
+        crewinfo_index crewinfo(_code, _code.value);
+        auto iterator = crewinfo.find(user.value);
+        eosio_assert(iterator != crewinfo.end(), "Crew-info does not exist.");
+        crewinfo.erase(iterator);
+    }
+
 private:
     struct [[eosio::table]] account {
         asset    balance;
@@ -641,6 +686,15 @@ private:
     typedef eosio::multi_index<"results"_n, results, 
             eosio::indexed_by<"user"_n, const_mem_fun<results, uint64_t, &results::by_user>>, 
             eosio::indexed_by<"treasurepkey"_n, const_mem_fun<results, uint64_t, &results::by_treasurepkey>>> results_index;
+
+    struct [[eosio::table]] crewinfo {
+        eosio::name user;
+        std::string imagehash;
+        std::string quote;
+        
+        uint64_t primary_key() const { return  user.value; }
+    };
+    typedef eosio::multi_index<"crewinfo"_n, crewinfo> crewinfo_index;
 
     void send_summary(name user, std::string message) {
         action(
@@ -781,6 +835,12 @@ extern "C" {
     }
     else if(code==receiver && action==name("eraseresult").value) {
       execute_action(name(receiver), name(code), &cptblackbill::eraseresult );
+    }
+    else if(code==receiver && action==name("upsertcrew").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::upsertcrew );
+    }
+    else if(code==receiver && action==name("erasecrew").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::erasecrew );
     }
     else if(code==receiver && action==name("issue").value) {
       execute_action(name(receiver), name(code), &cptblackbill::issue );
