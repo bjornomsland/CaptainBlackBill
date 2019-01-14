@@ -179,6 +179,22 @@ public:
                 }
             });
         }
+        else if (memo.rfind("Buy Treasure No.", 0) == 0) {
+            //from account pays to check a treasure value
+            uint64_t treasurepkey = std::strtoull( memo.substr(16).c_str(),NULL,0 ); //Find treasure pkey from transfer memo
+            
+            treasure_index treasures(_self, _self.value);
+            auto iterator = treasures.find(treasurepkey);
+            eosio_assert(iterator != treasures.end(), "Treasure not found.");
+            eosio_assert(iterator->sellingprice.amount > 0, "Treasure is not for sale.");
+            eosio_assert(eos.amount >= iterator->sellingprice.amount, "Transfered amount is below selling price for this treasure.");
+            
+            //Update owner of treasure
+            treasures.modify(iterator, _self, [&]( auto& row ) {
+                row.owner = from; 
+                row.sellingprice = eosio::asset(0, symbol(symbol_code("EOS"), 4)); //Set selling price to 0 after new owner bought the treasure 
+            });
+        }
     }
     //=====================================================================
 
@@ -398,9 +414,9 @@ public:
                     send_summary(treasureowner, "Congrats! This is bonus tokens for creating great content at CptBlackBill!"); 
                 }
                 else{
-                    if(rankingpoints > 1000)
-                        bonusPayout = 10000000; //1000 BLKBILLs
-                    else if (rankingpoints > 100)
+                    if(rankingpoints > 5000)
+                        bonusPayout = 2000000; //200 BLKBILLs
+                    else if (rankingpoints > 1000)
                         bonusPayout = 1000000; //100 BLKBILLs
                     else
                         bonusPayout = 100000; //10 BLKBILLs
@@ -423,6 +439,7 @@ public:
                 results.emplace(_self, [&]( auto& row ) { 
                     row.pkey = results.available_primary_key();
                     row.user = byuser; //The eos account that found and unlocked the treasure
+                    row.creator = treasureowner; //The eos account that created or owns the treasure
                     row.treasurepkey = pkey;
                     row.payouteos = thisTurnover;
                     row.eosusdprice = getEosUsdPrice(); //2019-01-08
@@ -448,6 +465,21 @@ public:
         
         treasures.modify(iterator, user, [&]( auto& row ) {
             row.expirationdate = now() + 94608000; //Treasure ownership renewed for three years
+        });
+    }
+
+    [[eosio::action]]
+    void setsellprice(name user, uint64_t pkey, asset sellingprice) {
+        require_auth(user);
+        
+        treasure_index treasures(_code, _code.value);
+        auto iterator = treasures.find(pkey);
+        eosio_assert(iterator != treasures.end(), "Treasure not found");
+        eosio_assert(user == iterator->owner, "You don't have access to set selling price on this treasure.");
+        eosio_assert(sellingprice.symbol == symbol(symbol_code("EOS"), 4), "Selling price must be symbol code EOS");
+
+        treasures.modify(iterator, user, [&]( auto& row ) {
+            row.sellingprice = sellingprice; 
         });
     }
 
@@ -554,20 +586,22 @@ public:
     }
 
     [[eosio::action]]
-    void upsertcrew(name user, std::string imagehash, std::string quote) 
+    void upsertcrew(name user, name crewmember, std::string imagehash, std::string quote) 
     {
         require_auth( user );
         crewinfo_index crewinfo(_code, _code.value);
-        auto iterator = crewinfo.find(user.value);
+        auto iterator = crewinfo.find(crewmember.value);
         if( iterator == crewinfo.end() )
         {
+            eosio_assert(user == crewmember || user == "cptblackbill"_n, "Only Cpt.BlackBill can insert crewmembers on behalf of other users.");
             crewinfo.emplace(user, [&]( auto& row ) {
-                row.user = user;
+                row.user = crewmember;
                 row.imagehash = imagehash;
                 row.quote = quote;
             });
         }
         else {
+            eosio_assert(user == iterator->user || user == "cptblackbill"_n, "You don't have access to modify this crewmember.");
             crewinfo.modify(iterator, user, [&]( auto& row ) {
                 row.imagehash = imagehash;
                 row.quote = quote;
@@ -673,6 +707,7 @@ private:
         uint64_t pkey;
         uint64_t treasurepkey;
         eosio::name user;
+        eosio::name creator;
         std::string trxid;
         eosio::asset payouteos;
         eosio::asset eosusdprice;
@@ -681,10 +716,12 @@ private:
         
         uint64_t primary_key() const { return  pkey; }
         uint64_t by_user() const {return user.value; } //second key, can be non-unique
-        uint64_t by_treasurepkey() const {return treasurepkey; } //third key, can be non-unique
+        uint64_t by_creator() const {return creator.value; } //third key, can be non-unique
+        uint64_t by_treasurepkey() const {return treasurepkey; } //fourth key, can be non-unique
     };
     typedef eosio::multi_index<"results"_n, results, 
             eosio::indexed_by<"user"_n, const_mem_fun<results, uint64_t, &results::by_user>>, 
+            eosio::indexed_by<"creator"_n, const_mem_fun<results, uint64_t, &results::by_creator>>, 
             eosio::indexed_by<"treasurepkey"_n, const_mem_fun<results, uint64_t, &results::by_treasurepkey>>> results_index;
 
     struct [[eosio::table]] crewinfo {
@@ -814,6 +851,9 @@ extern "C" {
     }
     else if(code==receiver && action==name("modexpdate").value) {
       execute_action(name(receiver), name(code), &cptblackbill::modexpdate );
+    }
+    else if(code==receiver && action==name("setsellprice").value) {
+      execute_action(name(receiver), name(code), &cptblackbill::setsellprice );
     }
     else if(code==receiver && action==name("erasetreasur").value) {
       execute_action(name(receiver), name(code), &cptblackbill::erasetreasur );
