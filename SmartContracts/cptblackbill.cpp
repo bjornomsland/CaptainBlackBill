@@ -395,7 +395,7 @@ public:
 
                 //Reward finder for using CptBlackBill
                 cptblackbill::issue(byuser, eosio::asset(100000, symbol(symbol_code("BLKBILL"), 4)), std::string("10 BLKBILL tokens as congrats for unlocking treasure!") );
-                send_summary(byuser, "10 BLKBILL tokens as congrats for unlocking a treasure!");
+                //send_summary(byuser, "10 BLKBILL tokens as congrats for unlocking a treasure!");
                 
                 //Reward creator for creating content 
                 //BONUS TOKENS TO CREATORS
@@ -411,7 +411,7 @@ public:
                         "cptblackbill"_n, "transfer"_n,
                         std::make_tuple(get_self(), treasureowner, eosio::asset(bonusPayout, symbol(symbol_code("BLKBILL"), 4)), std::string("Congrats! This is bonus tokens for creating great content at CptBlackBill!"))
                     ).send();
-                    send_summary(treasureowner, "Congrats! This is bonus tokens for creating great content at CptBlackBill!"); 
+                    //send_summary(treasureowner, "Congrats! This is bonus tokens for creating great content at CptBlackBill!"); 
                 }
                 else{
                     if(rankingpoints > 5000)
@@ -422,7 +422,7 @@ public:
                         bonusPayout = 100000; //10 BLKBILLs
 
                     cptblackbill::issue(treasureowner, eosio::asset(bonusPayout, symbol(symbol_code("BLKBILL"), 4)), std::string("10 BLKBILLs for someone solving your treasure.") );
-                    send_summary(treasureowner, "10 BLKBILLs for someone solving your treasure.");
+                    //send_summary(treasureowner, "10 BLKBILLs for someone solving your treasure.");
                 } 
                 
                 //Remove current sponsor award info. This will open for adding the next sponsor award from queue
@@ -445,8 +445,8 @@ public:
                     row.eosusdprice = getEosUsdPrice(); //2019-01-08
                     row.minedblkbills = eosio::asset(bonusPayout, symbol(symbol_code("BLKBILL"), 4));
                     row.timestamp = now();
-                }); 
-            }
+                });
+             }
         });
         
         //Link next available sponsor award to this treasure. Must execute after Modify-code above.
@@ -617,6 +617,13 @@ public:
         auto iterator = crewinfo.find(user.value);
         eosio_assert(iterator != crewinfo.end(), "Crew-info does not exist.");
         crewinfo.erase(iterator);
+    }
+
+    [[eosio::action]]
+    void runpayout(name user) {
+        require_auth("cptbbpayout1"_n);
+       
+        
     }
 
 private:
