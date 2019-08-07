@@ -9,3 +9,4 @@
 #include <eosiolib/print.hpp>
 #include <eosiolib/crypto.h>
 #include <string>
+#include <cmath>
